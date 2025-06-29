@@ -1,0 +1,61 @@
+version: '3.9'
+
+services:
+  db:
+    image: postgres:16.4-bookworm
+    container_name: pricing-db
+    environment:
+      POSTGRES_SERVER: pricing-db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: root1234
+      POSTGRES_DB: pricing_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pricing_pgdata:/var/lib/postgresql/data
+    networks:
+      - cloud-network
+#    extra_hosts:
+#      - "kafka:${KAFKA_IP}"
+    dns_search:
+      - cloud-network
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres || exit 1" ]
+
+
+  pricing-catalog-service:
+    build: .
+    depends_on:
+      - db
+    environment:
+      DATABASE_URL: postgres+asyncpg://postgres:root1234@db:5432/pricing_db
+      POSTGRES_SERVER: pricing-db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: root1234
+      POSTGRES_DB: pricing_db
+    ports:
+      - "8004:8004"
+    networks:
+      - cloud-network
+    volumes:
+      - .:/app
+    working_dir: /app
+    healthcheck:
+          test: ["CMD", "curl", "-f", "http://localhost:8004/api/v1/check_health"]
+          interval: 10s
+          timeout: 5s
+          retries: 5
+
+
+volumes:
+  pricing_pgdata:
+
+networks:
+  cloud-network:
+    driver: bridge
+    name: cloud-network
+    attachable: true
