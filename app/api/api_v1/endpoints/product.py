@@ -14,6 +14,9 @@ from app.schemas.product_expose import ProductExposeSchema,FlavorMirrorSchema
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.schemas.product import ProductAdminSchema, ProductCreateSchema, ProductUpdateSchema
+from app.schemas.product_expose import ProductExposeSchema,FlavorMirrorSchema
+
 
 router = APIRouter()
 #TODO: this is for client we can ignore it
@@ -158,3 +161,65 @@ async def list_flavors(
 async def sync_flavors_from_compute(flavors: List[dict], db: AsyncSession = Depends(get_db)):
     repo = ProductRepository(db)
     return await repo.sync_flavors_from_openstack(flavors)
+
+@router.get("/plans", response_model=List[Plan])
+async def list_plans(db: AsyncSession = Depends(get_db)):
+    result = []
+    products = await db.execute(
+        select(Product).options(
+            selectinload(Product.product_configurable_options)
+            .selectinload(ProductConfigurableOption.configurable_option)
+            .selectinload(ConfigurableOption.choices)
+            .selectinload(ConfigurableOptionChoice.flavor_mirror),
+            selectinload(Product.product_configurable_options)
+            .selectinload(ProductConfigurableOption.configurable_option)
+            .selectinload(ConfigurableOption.choices)
+            .selectinload(ConfigurableOptionChoice.cycles)
+        )
+    )
+
+    for product in products.scalars():
+        for pco in product.product_configurable_options:
+            for choice in pco.configurable_option.choices:
+                flavor = choice.flavor_mirror
+                if not flavor:
+                    continue
+                cycles = {c.cycle.name: float(c.price) for c in choice.cycles}
+
+                result.append(
+                    Plan(
+                        name=product.name,
+                        vcpus=flavor.vcpus,
+                        ram_mb=flavor.ram_mb,
+                        disk_gb=flavor.disk_gb,
+                        price_per_hour=cycles.get("hour"),
+                        price_per_month=cycles.get("month")
+                    )
+                )
+
+    return result
+
+
+@router.get("/backups", response_model=list[BackupItem])
+async def list_backups(db: AsyncSession = Depends(get_db)):
+    backups = []
+
+    result = await db.execute(
+        select(ConfigurableOption)
+        .where(ConfigurableOption.name.ilike("backup"))  # or .contains("backup") if more generic
+        .options(
+            selectinload(ConfigurableOption.choices)
+            .selectinload(ConfigurableOptionChoice.cycles)
+        )
+    )
+
+    for option in result.scalars():
+        for choice in option.choices:
+            monthly_cycle = next((c for c in choice.cycles if c.cycle == CyclePeriods.month), None)
+            backups.append(BackupItem(
+                id=choice.id,
+                title=choice.label,
+                price_per_month=float(monthly_cycle.price) if monthly_cycle else None
+            ))
+
+    return backups
